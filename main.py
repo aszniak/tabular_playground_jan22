@@ -18,6 +18,18 @@ def SMAPE(outputs, targets):
 def convert_datetime(row):
     date_ = date.fromisoformat(row['date'])
     day = date_.day
+    if date_.weekday() == 5:
+        row['saturday'] = 1
+    elif date_.weekday() == 6:
+        row['sunday'] = 1
+    if date_.month in [12, 1, 2]:
+        row['winter'] = 1
+    elif date_.month in [3, 4, 5]:
+        row['spring'] = 1
+    elif date_.month in [6, 7, 8]:
+        row['summer'] = 1
+    elif date_.month in [9, 10, 11]:
+        row['autumn'] = 1
     row['sin_date'] = np.sin(2 * np.pi * (day / 365))
     row['cos_date'] = np.cos(2 * np.pi * (day / 365))
     return row
@@ -184,9 +196,6 @@ def grade(model, device, baseline_rmse, train_loader, test_loader, bins_range):
         train_outputs = np.array(train_outputs)
         train_targets = np.array(train_targets)
         train_diff = train_targets - train_outputs
-        plt.hist(train_diff, bins=range(-bins_range, bins_range), label="Train diff", color='blue')
-        plt.legend()
-        plt.show()
 
         train_rmse = np.sqrt(((train_targets - train_outputs) ** 2).mean())
 
@@ -204,8 +213,12 @@ def grade(model, device, baseline_rmse, train_loader, test_loader, bins_range):
         test_outputs = np.array(test_outputs)
         test_targets = np.array(test_targets)
         test_diff = test_targets - test_outputs
-        plt.hist(test_diff, bins=range(-bins_range, bins_range), label="Test diff", color='orange')
-        plt.legend()
+
+        fig, axs = plt.subplots(1, 2)
+        axs[0].hist(train_diff, bins=range(-bins_range, bins_range), color='blue')
+        axs[0].set_title('Training diff')
+        axs[1].hist(test_diff, bins=range(-bins_range, bins_range), color='orange')
+        axs[1].set_title('Test diff')
         plt.show()
 
         test_smape = SMAPE(test_outputs, test_targets)
@@ -234,6 +247,8 @@ def generate_submission(model, device, eval_loader, filename, start_idx=26298):
     print(f"Saved submission to {filename}.")
 
 
+plt.rcParams["figure.figsize"] = (16, 8)
+
 train_dataset = StoresDataset('train.csv', set_type='training')
 test_dataset = StoresDataset('train.csv', set_type='test')
 
@@ -253,9 +268,9 @@ device = torch.device("cuda:0")
 model.to(device)
 
 criterion = nn.MSELoss()
-optimizer = torch.optim.Adam(model.parameters(), lr=1e-5)
+optimizer = torch.optim.Adam(model.parameters(), lr=5e-5)
 
-train(model, device, criterion, optimizer, baseline_rmse, train_loader, test_loader, epochs=50)
+train(model, device, criterion, optimizer, baseline_rmse, train_loader, test_loader, epochs=25)
 
 grade(model, device, baseline_rmse, train_loader, test_loader, bins_range=500)
 
