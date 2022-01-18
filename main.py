@@ -18,9 +18,24 @@ def SMAPE(outputs, targets):
 def convert_datetime(row):
     date_ = date.fromisoformat(row['date'])
     day = date_.day
-    if date_.weekday() == 5:
+    month = date_.month
+    weekday = date_.weekday()
+    month_day_tuple = (month, day)
+    if row['country'] == 'Finland':
+        bank_holidays = [(1, 1), (1, 6), (5, 1), (12, 6), (12, 25), (12, 26)]
+        if month_day_tuple in bank_holidays:
+            row['bank_holiday'] = 1
+    if row['country'] == 'Sweden':
+        bank_holidays = [(1, 1), (1, 6), (5, 1), (6, 6), (12, 25), (12, 26)]
+        if month_day_tuple in bank_holidays:
+            row['bank_holiday'] = 1
+    if row['country'] == 'Norway':
+        bank_holidays = [(1, 1), (5, 1), (5, 17), (12, 25), (12, 26)]
+        if month_day_tuple in bank_holidays:
+            row['bank_holiday'] = 1
+    if weekday == 5:
         row['saturday'] = 1
-    elif date_.weekday() == 6:
+    elif weekday == 6:
         row['sunday'] = 1
     if date_.month in [12, 1, 2]:
         row['winter'] = 1
@@ -30,8 +45,16 @@ def convert_datetime(row):
         row['summer'] = 1
     elif date_.month in [9, 10, 11]:
         row['autumn'] = 1
-    row['sin_date'] = np.sin(2 * np.pi * (day / 365))
-    row['cos_date'] = np.cos(2 * np.pi * (day / 365))
+    timetuple = date_.timetuple()
+    doy = timetuple.tm_yday
+    row['sin_doy'] = np.sin(2 * np.pi * (doy / 365))
+    row['cos_doy'] = np.cos(2 * np.pi * (doy / 365))
+    row['sin_moy'] = np.sin(2 * np.pi * (month / 12))
+    row['cos_moy'] = np.cos(2 * np.pi * (month / 12))
+    row['sin_dom'] = np.sin(2 * np.pi * (day / 31))
+    row['cos_dom'] = np.cos(2 * np.pi * (day / 31))
+    row['sin_dow'] = np.sin(2 * np.pi * (weekday / 6))
+    row['cos_dow'] = np.cos(2 * np.pi * (weekday / 6))
     return row
 
 
@@ -71,7 +94,7 @@ class StoresDataset(Dataset):
         if self.set_type != "eval":
             self.df = self.df.sample(frac=1).reset_index(drop=True)
         if truncated:
-            self.df = self.df.truncate(after=5000)
+            self.df = self.df.truncate(after=2000)
         if self.set_type == "training":
             self.df = self.df.truncate(after=np.floor(len(self.df) * split))
         elif self.set_type == "test":
@@ -104,20 +127,23 @@ class StoresDataset(Dataset):
 
 
 class StoresModel(nn.Module):
-    def __init__(self, D):
+    def __init__(self, D, h_units):
         super(StoresModel, self).__init__()
         self.D = D
         self.linear = nn.Sequential(
-            nn.Linear(self.D, 8192),
+            nn.Linear(self.D, h_units),
             nn.ReLU(),
             nn.Dropout(),
-            nn.Linear(8192, 8192),
+            nn.Linear(h_units, h_units),
             nn.ReLU(),
             nn.Dropout(),
-            nn.Linear(8192, 8192),
+            nn.Linear(h_units, h_units),
             nn.ReLU(),
             nn.Dropout(),
-            nn.Linear(8192, 1),
+            nn.Linear(h_units, h_units),
+            nn.ReLU(),
+            nn.Dropout(),
+            nn.Linear(h_units, 1),
         )
 
     def forward(self, X):
@@ -126,7 +152,7 @@ class StoresModel(nn.Module):
         return out
 
 
-def train(model, device, criterion, optimizer, baseline_rmse, train_loader, test_loader, epochs):
+def train(model, device, criterion, optimizer, scheduler, baseline_rmse, train_loader, test_loader, epochs):
     train_losses = []
     test_losses = []
     epochs = epochs
@@ -152,6 +178,7 @@ def train(model, device, criterion, optimizer, baseline_rmse, train_loader, test
             train_loss.append(loss.item())
 
         train_losses.append(np.mean(train_loss))
+        scheduler.step()
 
         batch = 0
         model.eval()
@@ -240,7 +267,7 @@ def generate_submission(model, device, eval_loader, filename, start_idx=26298):
             output = model(input_).cpu().numpy().flatten()
             row_ids.append(i)
             i += 1
-            num_sales.append(int(output))
+            num_sales.append(int(np.round(output)))
     submission['row_id'] = row_ids
     submission['num_sold'] = num_sales
     submission.to_csv(filename, index=False)
@@ -249,8 +276,8 @@ def generate_submission(model, device, eval_loader, filename, start_idx=26298):
 
 plt.rcParams["figure.figsize"] = (16, 8)
 
-train_dataset = StoresDataset('train.csv', set_type='training')
-test_dataset = StoresDataset('train.csv', set_type='test')
+train_dataset = StoresDataset('train.csv', set_type='training', truncated=False)
+test_dataset = StoresDataset('train.csv', set_type='test', truncated=False)
 
 batch_sz = 2000
 train_batches = train_dataset.__len__() / batch_sz
@@ -262,19 +289,23 @@ test_loader = DataLoader(dataset=test_dataset, batch_size=batch_sz, shuffle=Fals
 
 baseline_rmse = 200.89605266688307
 
-model = StoresModel(D)
-
+model = StoresModel(D, h_units=12280)
 device = torch.device("cuda:0")
 model.to(device)
 
 criterion = nn.MSELoss()
 optimizer = torch.optim.Adam(model.parameters(), lr=5e-5)
+scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.99)
 
-train(model, device, criterion, optimizer, baseline_rmse, train_loader, test_loader, epochs=25)
+train(model, device, criterion, optimizer, scheduler, baseline_rmse, train_loader, test_loader, epochs=50)
 
 grade(model, device, baseline_rmse, train_loader, test_loader, bins_range=500)
 
 eval_dataset = StoresDataset('test.csv', set_type='eval')
 eval_loader = DataLoader(dataset=eval_dataset, batch_size=1, shuffle=False)
 
-generate_submission(model, device, eval_loader, 'submission.csv')
+
+df = pd.read_csv('test.csv')
+start_idx = df['row_id'][0]
+
+generate_submission(model, device, eval_loader, 'submission.csv', start_idx=start_idx)

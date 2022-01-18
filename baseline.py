@@ -1,8 +1,9 @@
 import numpy as np
 import matplotlib.pyplot as plt
+from datetime import date
 
-days = np.linspace(0, 365, 365)
-plt.plot(np.sin(2 * np.pi * days/365))
-plt.show()
+somedate = date.fromisoformat('2015-04-05')
+timetuple = somedate.timetuple()
+print(timetuple.tm_yday)
 
 
