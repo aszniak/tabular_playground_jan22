@@ -4,10 +4,9 @@ from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 import torch
 import torch.nn as nn
-from datetime import date
 from datetime import datetime
-from sklearn.preprocessing import StandardScaler
 import matplotlib.pyplot as plt
+from preprocessing import preprocess
 
 
 def SMAPE(outputs, targets):
@@ -15,114 +14,44 @@ def SMAPE(outputs, targets):
     return smape
 
 
-def convert_datetime(row):
-    date_ = date.fromisoformat(row['date'])
-    day = date_.day
-    month = date_.month
-    weekday = date_.weekday()
-    month_day_tuple = (month, day)
-    if row['country'] == 'Finland':
-        bank_holidays = [(1, 1), (1, 6), (5, 1), (12, 6), (12, 25), (12, 26)]
-        if month_day_tuple in bank_holidays:
-            row['bank_holiday'] = 1
-    if row['country'] == 'Sweden':
-        bank_holidays = [(1, 1), (1, 6), (5, 1), (6, 6), (12, 25), (12, 26)]
-        if month_day_tuple in bank_holidays:
-            row['bank_holiday'] = 1
-    if row['country'] == 'Norway':
-        bank_holidays = [(1, 1), (5, 1), (5, 17), (12, 25), (12, 26)]
-        if month_day_tuple in bank_holidays:
-            row['bank_holiday'] = 1
-    if weekday == 5:
-        row['saturday'] = 1
-    elif weekday == 6:
-        row['sunday'] = 1
-    if date_.month in [12, 1, 2]:
-        row['winter'] = 1
-    elif date_.month in [3, 4, 5]:
-        row['spring'] = 1
-    elif date_.month in [6, 7, 8]:
-        row['summer'] = 1
-    elif date_.month in [9, 10, 11]:
-        row['autumn'] = 1
-    timetuple = date_.timetuple()
-    doy = timetuple.tm_yday
-    row['sin_doy'] = np.sin(2 * np.pi * (doy / 365))
-    row['cos_doy'] = np.cos(2 * np.pi * (doy / 365))
-    row['sin_moy'] = np.sin(2 * np.pi * (month / 12))
-    row['cos_moy'] = np.cos(2 * np.pi * (month / 12))
-    row['sin_dom'] = np.sin(2 * np.pi * (day / 31))
-    row['cos_dom'] = np.cos(2 * np.pi * (day / 31))
-    row['sin_dow'] = np.sin(2 * np.pi * (weekday / 6))
-    row['cos_dow'] = np.cos(2 * np.pi * (weekday / 6))
-    return row
-
-
-def convert_country(row):
-    if row['country'] == 'Finland':
-        row['finland'] = 1
-    elif row['country'] == 'Norway':
-        row['norway'] = 1
-    elif row['country'] == 'Sweden':
-        row['sweden'] = 1
-    return row
-
-
-def convert_product(row):
-    if row['product'] == 'Kaggle Mug':
-        row['mug'] = 1
-    elif row['product'] == 'Kaggle Hat':
-        row['hat'] = 1
-    elif row['product'] == 'Kaggle Sticker':
-        row['sticker'] = 1
-    return row
-
-
-def convert_store(row):
-    if row['store'] == 'KaggleMart':
-        row['store'] = 1
-    else:
-        row['store'] = 0
-    return row
-
-
 class StoresDataset(Dataset):
-    def __init__(self, file, set_type, truncated=False, split=0.8):
+    def __init__(self, set_type, split=0.95):
         self.set_type = set_type
-        print(f"Initializing {self.set_type} dataset, this may take a moment...")
-        self.df = pd.read_csv(file)
-        if self.set_type != "eval":
-            self.df = self.df.sample(frac=1).reset_index(drop=True)
-        if truncated:
-            self.df = self.df.truncate(after=2000)
-        if self.set_type == "training":
-            self.df = self.df.truncate(after=np.floor(len(self.df) * split))
-        elif self.set_type == "test":
-            self.df = self.df.truncate(before=np.floor(len(self.df) * split))
-        if self.set_type != "eval":
-            self.data = self.df.drop(columns=['row_id', 'num_sold'])
+        print(f"Initializing {self.set_type} dataset")
+        if set_type != "eval":
+            self.data = np.load(f"train_data_array.npy")
+            split_idx = int(split * len(self.data))
+            self.targets = np.load("train_targets_array.npy")
+            self.training_targets = self.targets[:split_idx]
+            self.test_targets = self.targets[split_idx:]
+            self.training_data = self.data[:split_idx]
+            self.test_data = self.data[split_idx:]
         else:
-            self.data = self.df.drop(columns=['row_id'])
-        self.data = self.data.apply(convert_datetime, axis=1)
-        self.data = self.data.apply(convert_country, axis=1)
-        self.data = self.data.apply(convert_product, axis=1)
-        self.data = self.data.apply(convert_store, axis=1)
-        self.data = self.data.drop(columns=['date', 'country', 'product'], axis=1)
-        self.data = self.data.to_numpy(dtype="float32")
-        if self.set_type != "eval":
-            self.targets = self.df['num_sold']
-            self.targets = self.targets.to_numpy(dtype='float32')
+            self.eval_data = np.load(f"test_data_array.npy")
 
     def __len__(self):
-        return len(self.df)
+        if self.set_type == "train":
+            return len(self.training_data)
+        elif self.set_type == "test":
+            return len(self.test_data)
+        else:
+            return len(self.eval_data)
 
     def __getitem__(self, item):
-        data = torch.from_numpy(self.data[item])
-        data = torch.nan_to_num(data)
         if self.set_type != "eval":
-            target = torch.tensor(self.targets[item].reshape(-1))
-            return data, target
+            if self.set_type == "train":
+                data = torch.tensor(self.training_data[item])
+                data = torch.nan_to_num(data)
+                target = torch.tensor(self.training_targets[item].reshape(-1))
+                return data, target
+            else:
+                data = torch.tensor(self.test_data[item])
+                data = torch.nan_to_num(data)
+                target = torch.tensor(self.test_targets[item].reshape(-1))
+                return data, target
         else:
+            data = torch.tensor(self.eval_data[item])
+            data = torch.nan_to_num(data)
             return data, 0
 
 
@@ -276,8 +205,10 @@ def generate_submission(model, device, eval_loader, filename, start_idx=26298):
 
 plt.rcParams["figure.figsize"] = (16, 8)
 
-train_dataset = StoresDataset('train.csv', set_type='training', truncated=False)
-test_dataset = StoresDataset('train.csv', set_type='test', truncated=False)
+# preprocess()
+
+train_dataset = StoresDataset(set_type='train')
+test_dataset = StoresDataset(set_type='test')
 
 batch_sz = 2000
 train_batches = train_dataset.__len__() / batch_sz
@@ -301,9 +232,8 @@ train(model, device, criterion, optimizer, scheduler, baseline_rmse, train_loade
 
 grade(model, device, baseline_rmse, train_loader, test_loader, bins_range=500)
 
-eval_dataset = StoresDataset('test.csv', set_type='eval')
+eval_dataset = StoresDataset(set_type='eval')
 eval_loader = DataLoader(dataset=eval_dataset, batch_size=1, shuffle=False)
-
 
 df = pd.read_csv('test.csv')
 start_idx = df['row_id'][0]
