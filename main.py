@@ -6,6 +6,8 @@ import torch
 import torch.nn as nn
 from datetime import datetime
 import matplotlib.pyplot as plt
+from sklearn.preprocessing import StandardScaler
+from sklearn.compose import make_column_transformer
 from preprocessing import preprocess
 
 
@@ -15,11 +17,14 @@ def SMAPE(outputs, targets):
 
 
 class StoresDataset(Dataset):
-    def __init__(self, set_type, split=0.95):
+    def __init__(self, set_type, split=0.8):
+        self.scaler = StandardScaler()
+        self.column_transformer = make_column_transformer((self.scaler, [6, 10, 15, 22]), remainder="passthrough")
         self.set_type = set_type
         print(f"Initializing {self.set_type} dataset")
         if set_type != "eval":
-            self.data = np.load(f"train_data_array.npy")
+            self.data = np.load("train_data_array.npy")
+            self.data = self.column_transformer.fit_transform(self.data)
             split_idx = int(split * len(self.data))
             self.targets = np.load("train_targets_array.npy")
             self.training_targets = self.targets[:split_idx]
@@ -27,7 +32,9 @@ class StoresDataset(Dataset):
             self.training_data = self.data[:split_idx]
             self.test_data = self.data[split_idx:]
         else:
-            self.eval_data = np.load(f"test_data_array.npy")
+            self.data = np.load(f"test_data_array.npy")
+            self.data = self.column_transformer.fit_transform(self.data)
+            self.eval_data = self.data
 
     def __len__(self):
         if self.set_type == "train":
@@ -56,23 +63,26 @@ class StoresDataset(Dataset):
 
 
 class StoresModel(nn.Module):
-    def __init__(self, D, h_units):
+    def __init__(self, D):
         super(StoresModel, self).__init__()
         self.D = D
         self.linear = nn.Sequential(
-            nn.Linear(self.D, h_units),
+            nn.Linear(self.D, 8192),
             nn.ReLU(),
-            nn.Dropout(),
-            nn.Linear(h_units, h_units),
+            nn.Dropout(0.5),
+            nn.Linear(8192, 8192),
             nn.ReLU(),
-            nn.Dropout(),
-            nn.Linear(h_units, h_units),
+            nn.Dropout(0.5),
+            nn.Linear(8192, 12280),
             nn.ReLU(),
-            nn.Dropout(),
-            nn.Linear(h_units, h_units),
+            nn.Dropout(0.5),
+            nn.Linear(12280, 8192),
             nn.ReLU(),
-            nn.Dropout(),
-            nn.Linear(h_units, 1),
+            nn.Dropout(0.5),
+            nn.Linear(8192, 4096),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(4096, 1),
         )
 
     def forward(self, X):
@@ -80,8 +90,11 @@ class StoresModel(nn.Module):
         out = self.linear(input_)
         return out
 
+    def compute_l1_loss(self, w):
+        return torch.abs(w).sum()
 
-def train(model, device, criterion, optimizer, scheduler, baseline_rmse, train_loader, test_loader, epochs):
+
+def train(model, device, criterion, optimizer, baseline_rmse, train_loader, test_loader, epochs):
     train_losses = []
     test_losses = []
     epochs = epochs
@@ -101,13 +114,20 @@ def train(model, device, criterion, optimizer, scheduler, baseline_rmse, train_l
             outputs = model(inputs)
             loss = criterion(outputs, targets)
 
+            l1_weight = 0.05
+            l1_parameters = []
+            for parameter in model.parameters():
+                l1_parameters.append(parameter.view(-1))
+            l1 = l1_weight * model.compute_l1_loss(torch.cat(l1_parameters))
+
+            loss += l1
+
             loss.backward()
             optimizer.step()
 
             train_loss.append(loss.item())
 
         train_losses.append(np.mean(train_loss))
-        scheduler.step()
 
         batch = 0
         model.eval()
@@ -210,7 +230,7 @@ plt.rcParams["figure.figsize"] = (16, 8)
 train_dataset = StoresDataset(set_type='train')
 test_dataset = StoresDataset(set_type='test')
 
-batch_sz = 2000
+batch_sz = 1024
 train_batches = train_dataset.__len__() / batch_sz
 test_batches = test_dataset.__len__() / batch_sz
 D = len(train_dataset.data[0])
@@ -220,15 +240,14 @@ test_loader = DataLoader(dataset=test_dataset, batch_size=batch_sz, shuffle=Fals
 
 baseline_rmse = 200.89605266688307
 
-model = StoresModel(D, h_units=12280)
+model = StoresModel(D)
 device = torch.device("cuda:0")
 model.to(device)
 
 criterion = nn.MSELoss()
-optimizer = torch.optim.Adam(model.parameters(), lr=5e-5)
-scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.99)
+optimizer = torch.optim.Adam(model.parameters(), lr=8e-5, weight_decay=1e-3)
 
-train(model, device, criterion, optimizer, scheduler, baseline_rmse, train_loader, test_loader, epochs=50)
+train(model, device, criterion, optimizer, baseline_rmse, train_loader, test_loader, epochs=80)
 
 grade(model, device, baseline_rmse, train_loader, test_loader, bins_range=500)
 
